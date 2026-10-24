@@ -112,6 +112,7 @@
 </header>
 
 <main>
+  <div id="modeBanner" class="card hidden" style="border-color:var(--accent);background:var(--accent-soft)"></div>
   <!-- ============ DUPLICATES ============ -->
   <section id="tab-dupes">
     <div class="card">
@@ -257,7 +258,7 @@
     <div class="body">
       <p id="delSummary"></p>
       <div class="radio-cards" style="grid-template-columns:1fr">
-        <label><input type="radio" name="delMode" value="recycle" checked>Move to Recycle Bin<small>Recommended — you can restore them later.</small></label>
+        <label id="recycleOpt"><input type="radio" name="delMode" value="recycle" checked>Move to Recycle Bin<small>Recommended — you can restore them later.</small></label>
         <label><input type="radio" name="delMode" value="permanent">Delete permanently<small>Frees space immediately. Cannot be undone.</small></label>
       </div>
       <div class="warnbox hidden" id="permWarn">Permanent deletion cannot be undone.</div>
@@ -269,7 +270,6 @@
     </div>
   </div>
 </div>
-
 <script>
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -281,9 +281,11 @@ const fmtBytes = (b) => {
 };
 const fmtDate = (ms) => new Date(ms).toLocaleString();
 const fmtNum = (n) => n.toLocaleString();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function api(url, body) {
   const res = await fetch(url, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!(res.headers.get('content-type') || '').includes('application/json')) throw new Error('Data Cleaner server is not reachable');
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
@@ -295,6 +297,310 @@ function toast(msg) {
   if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.appendChild(t); }
   t.textContent = msg; t.classList.remove('hidden');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 4500);
+}
+
+// =====================================================================
+// Backends. "server" talks to server.js (full drive access, Recycle Bin).
+// "browser" uses the File System Access API, so the page also works when
+// hosted as a static site (Vercel, GitHub Pages) without server.js.
+// =====================================================================
+const CATEGORIES = {
+  Images: 'jpg jpeg png gif bmp webp tif tiff svg heic heif raw cr2 nef arw ico psd',
+  Videos: 'mp4 mkv avi mov wmv flv webm m4v mpg mpeg 3gp ts',
+  Audio: 'mp3 wav flac aac ogg m4a wma opus aiff mid midi',
+  Documents: 'pdf doc docx txt rtf odt md tex epub pages',
+  Spreadsheets: 'xls xlsx xlsm csv ods numbers tsv',
+  Presentations: 'ppt pptx odp key',
+  Archives: 'zip rar 7z tar gz bz2 xz iso tgz cab',
+  Code: 'js ts jsx tsx py java c cpp h cs go rs php rb html css scss json xml yml yaml sql sh ps1 bat ipynb',
+  Programs: 'exe msi apk dmg deb rpm appx msix',
+  Fonts: 'ttf otf woff woff2 fon',
+};
+const EXT_TO_CATEGORY = {};
+for (const [cat, exts] of Object.entries(CATEGORIES)) for (const e of exts.split(' ')) EXT_TO_CATEGORY[e] = cat;
+const MONTHS = ['01-January', '02-February', '03-March', '04-April', '05-May', '06-June', '07-July', '08-August', '09-September', '10-October', '11-November', '12-December'];
+const SKIP_DIRS = new Set(['$recycle.bin', 'system volume information', 'windows', 'program files', 'program files (x86)', 'programdata', 'node_modules', '.git']);
+const extOf = (name) => { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : ''; };
+
+const serverBackend = {
+  name: 'server',
+  async scan(root, opts, onProgress, cancelToken) {
+    const { jobId } = await api('/api/scan', { path: root, ...opts });
+    cancelToken.cancel = () => api('/api/job/cancel', { id: jobId });
+    for (;;) {
+      const j = await api('/api/job?id=' + jobId);
+      onProgress(j);
+      if (j.status !== 'running') {
+        if (j.status === 'error') throw new Error(j.error);
+        return j.status === 'cancelled' ? null : j.result;
+      }
+      await sleep(500);
+    }
+  },
+  async deleteFiles(paths, mode) { return (await api('/api/delete', { files: paths, mode })).results; },
+  reveal(p) { api('/api/reveal', { path: p }).catch(() => {}); },
+  async organizePreview(root, mode, includeSubfolders) { return api('/api/organize/preview', { path: root, mode, includeSubfolders }); },
+  async organizeApply(plan) { return api('/api/organize/apply', { path: plan.root, moves: plan.moves }); },
+  async undoInfo() { return (await api('/api/organize/undo')).undo; },
+  async undo() { return api('/api/organize/undo', {}); },
+};
+
+// ---------- browser backend ----------
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+async function digest(blob) { return crypto.subtle.digest('SHA-256', await blob.arrayBuffer()); }
+async function quickHash(file) {
+  const C = 64 * 1024;
+  if (file.size <= C * 2) return hex(await digest(file));
+  return hex(await digest(file.slice(0, C))) + hex(await digest(file.slice(file.size - C)));
+}
+// Hash in 8 MB chunks, then hash the chunk hashes - avoids loading huge files into memory.
+async function fullHash(file) {
+  const CH = 8 * 1024 * 1024;
+  if (file.size <= CH) return hex(await digest(file));
+  const parts = [];
+  for (let off = 0; off < file.size; off += CH) parts.push(new Uint8Array(await digest(file.slice(off, off + CH))));
+  const all = new Uint8Array(parts.length * 32);
+  parts.forEach((p, i) => all.set(p, i * 32));
+  return hex(await crypto.subtle.digest('SHA-256', all));
+}
+async function pool(items, limit, fn) {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; await fn(items[idx]); }
+  }));
+}
+async function walkHandle(root, opts, onFile, token) {
+  const stack = [{ dir: root, path: root.name }];
+  while (stack.length) {
+    if (token.cancelled) return;
+    const { dir, path } = stack.pop();
+    if (opts.onDir) opts.onDir(path);
+    try {
+      for await (const [name, h] of dir.entries()) {
+        if (!opts.includeHidden && name.startsWith('.')) continue;
+        const p = path + '/' + name;
+        if (h.kind === 'directory') {
+          if (SKIP_DIRS.has(name.toLowerCase()) || name.startsWith('$')) continue;
+          if (opts.skip && opts.skip(p)) continue;
+          stack.push({ dir: h, path: p });
+        } else await onFile(h, dir, name, p);
+      }
+    } catch { /* unreadable folder */ }
+  }
+}
+async function dirAt(root, parts, create) {
+  let d = root;
+  for (const p of parts) d = await d.getDirectoryHandle(p, { create });
+  return d;
+}
+async function exists(dir, name) {
+  try { await dir.getFileHandle(name); return true; } catch { return false; }
+}
+async function freeName(dir, name) {
+  if (!(await exists(dir, name))) return name;
+  const i = name.lastIndexOf('.');
+  const base = i > 0 ? name.slice(0, i) : name, ext = i > 0 ? name.slice(i) : '';
+  for (let n = 1; ; n++) { const c = `${base} (${n})${ext}`; if (!(await exists(dir, c))) return c; }
+}
+// Move a file handle; falls back to copy + delete where handle.move() is unavailable.
+async function moveFile(handle, fromDir, fromName, toDir, toName) {
+  if (handle.move) {
+    try { await handle.move(toDir, toName); return; } catch { /* fall back */ }
+  }
+  const file = await handle.getFile();
+  const nh = await toDir.getFileHandle(toName, { create: true });
+  const w = await nh.createWritable();
+  await file.stream().pipeTo(w);
+  await fromDir.removeEntry(fromName);
+}
+function targetFolderFor(name, size, mtime, mode) {
+  const ext = extOf(name);
+  const d = new Date(mtime);
+  if (mode === 'extension') return ext ? ext.toUpperCase() : 'No Extension';
+  if (mode === 'date') return `${d.getFullYear()}/${MONTHS[d.getMonth()]}`;
+  if (mode === 'type-date') return `${EXT_TO_CATEGORY[ext] || 'Others'}/${d.getFullYear()}`;
+  if (mode === 'size') {
+    const mb = size / 1048576;
+    return mb < 1 ? 'Small (under 1 MB)' : mb < 100 ? 'Medium (1-100 MB)' : mb < 1024 ? 'Large (100 MB-1 GB)' : 'Huge (over 1 GB)';
+  }
+  return EXT_TO_CATEGORY[ext] || 'Others';
+}
+
+const browserBackend = {
+  name: 'browser',
+  files: new Map(), // path -> { handle, parent, name, hash }
+  undoLog: null,
+
+  async scan(root, opts, onProgress, cancelToken) {
+    const token = { cancelled: false };
+    cancelToken.cancel = () => { token.cancelled = true; };
+    const started = Date.now();
+    const j = { phase: 'Listing files', filesSeen: 0, bytesSeen: 0, hashed: 0, toHash: 0, currentDir: '' };
+    let last = 0;
+    const report = (force) => { const now = Date.now(); if (force || now - last > 300) { last = now; onProgress({ ...j }); } };
+    const exts = opts.extensions ? new Set(opts.extensions) : null;
+    const bySize = new Map();
+    await walkHandle(root, { includeHidden: opts.includeHidden, onDir: (p) => { j.currentDir = p; report(); } }, async (h, parent, name, p) => {
+      if (exts && !exts.has(extOf(name))) return;
+      let f;
+      try { f = await h.getFile(); } catch { return; }
+      j.filesSeen++; j.bytesSeen += f.size; report();
+      if (!f.size || f.size < opts.minSize) return;
+      const rec = { path: p, name, size: f.size, mtime: f.lastModified, handle: h, parent };
+      const a = bySize.get(f.size); if (a) a.push(rec); else bySize.set(f.size, [rec]);
+    }, token);
+    if (token.cancelled) return null;
+
+    const stage = async (phase, list, key, fn) => {
+      Object.assign(j, { phase, toHash: list.length, hashed: 0 }); report(true);
+      await pool(list, 4, async (r) => {
+        if (token.cancelled) return;
+        try { r[key] = await fn(await r.handle.getFile()); } catch { r[key] = null; }
+        j.hashed++; report();
+      });
+    };
+    const groupBy = (list, key) => {
+      const m = new Map();
+      for (const r of list) if (r[key]) { const k = r.size + ':' + r[key]; const a = m.get(k); if (a) a.push(r); else m.set(k, [r]); }
+      return [...m.values()].filter((a) => a.length > 1);
+    };
+    const candidates = [...bySize.values()].filter((a) => a.length > 1).flat();
+    await stage('Quick-checking same-size files', candidates, 'quick', quickHash);
+    if (token.cancelled) return null;
+    const needFull = groupBy(candidates, 'quick').flat();
+    await stage('Verifying duplicates (full content hash)', needFull, 'hash', (f) => (f.size <= 128 * 1024 ? null : fullHash(f)));
+    if (token.cancelled) return null;
+    for (const r of needFull) if (r.size <= 128 * 1024) r.hash = r.quick;
+
+    this.files.clear();
+    const groups = groupBy(needFull, 'hash').map((files) => {
+      files.sort((a, b) => a.mtime - b.mtime);
+      for (const f of files) this.files.set(f.path, { handle: f.handle, parent: f.parent, name: f.name, hash: f.hash });
+      return { hash: files[0].hash, size: files[0].size, wasted: files[0].size * (files.length - 1), files: files.map(({ path, name, size, mtime }) => ({ path, name, size, mtime })) };
+    }).sort((a, b) => b.wasted - a.wasted);
+    return { root: root.name, groups, filesScanned: j.filesSeen, bytesScanned: j.bytesSeen, durationMs: Date.now() - started };
+  },
+
+  async deleteFiles(paths) {
+    // Never remove every copy of a file.
+    const remaining = new Map();
+    for (const r of this.files.values()) remaining.set(r.hash, (remaining.get(r.hash) || 0) + 1);
+    const results = [];
+    for (const p of paths) {
+      const r = this.files.get(p);
+      if (!r) { results.push({ path: p, ok: false, error: 'Not part of a duplicate scan result' }); continue; }
+      if (remaining.get(r.hash) <= 1) { results.push({ path: p, ok: false, error: 'Refused: this would delete every copy of the file' }); continue; }
+      try {
+        await r.parent.removeEntry(r.name);
+        remaining.set(r.hash, remaining.get(r.hash) - 1);
+        this.files.delete(p);
+        results.push({ path: p, ok: true });
+      } catch (e) { results.push({ path: p, ok: false, error: e.message }); }
+    }
+    return results;
+  },
+
+  reveal() {},
+
+  async organizePreview(root, mode, includeSubfolders) {
+    const files = [];
+    if (includeSubfolders) {
+      await walkHandle(root, {}, async (h, parent, name, p) => files.push({ h, parent, name, p }), { cancelled: false });
+    } else {
+      for await (const [name, h] of root.entries()) if (h.kind === 'file') files.push({ h, parent: root, name, p: root.name + '/' + name });
+    }
+    const reserved = new Set();
+    const moves = [], summary = {};
+    for (const f of files) {
+      if (f.name.startsWith('.') || /^(desktop\.ini|thumbs\.db)$/i.test(f.name)) continue;
+      let file;
+      try { file = await f.h.getFile(); } catch { continue; }
+      const folder = targetFolderFor(f.name, file.size, file.lastModified, mode);
+      const fromDir = f.p.slice(0, f.p.lastIndexOf('/'));
+      if (fromDir.toLowerCase() === (root.name + '/' + folder).toLowerCase()) continue; // already organized
+      let to = `${root.name}/${folder}/${f.name}`;
+      for (let n = 1; reserved.has(to.toLowerCase()); n++) {
+        const i = f.name.lastIndexOf('.');
+        to = `${root.name}/${folder}/${i > 0 ? f.name.slice(0, i) : f.name} (${n})${i > 0 ? f.name.slice(i) : ''}`;
+      }
+      reserved.add(to.toLowerCase());
+      moves.push({ from: f.p, to, folder, size: file.size, handle: f.h, parent: f.parent, name: f.name });
+      summary[folder] = summary[folder] || { count: 0, size: 0 };
+      summary[folder].count++; summary[folder].size += file.size;
+    }
+    return { root: root.name, rootHandle: root, mode, moves, summary };
+  },
+
+  async organizeApply(plan) {
+    const done = [], failed = [];
+    for (const m of plan.moves) {
+      try {
+        const destDir = await dirAt(plan.rootHandle, m.folder.split('/'), true);
+        const toName = await freeName(destDir, m.to.slice(m.to.lastIndexOf('/') + 1));
+        await moveFile(m.handle, m.parent, m.name, destDir, toName);
+        done.push({ fromDir: m.parent, fromName: m.name, folder: m.folder, toName });
+      } catch (e) { failed.push({ ...m, error: e.message }); }
+    }
+    if (done.length) this.undoLog = { root: plan.root, rootHandle: plan.rootHandle, at: Date.now(), moves: done };
+    return { moved: done.length, failed };
+  },
+
+  async undoInfo() {
+    const u = this.undoLog;
+    return u && { root: u.root, at: u.at, count: u.moves.length };
+  },
+
+  async undo() {
+    const log = this.undoLog;
+    if (!log) throw new Error('Nothing to undo');
+    let restored = 0;
+    const failed = [];
+    for (const m of log.moves.slice().reverse()) {
+      try {
+        const dir = await dirAt(log.rootHandle, m.folder.split('/'), false);
+        const h = await dir.getFileHandle(m.toName);
+        if (await exists(m.fromDir, m.fromName)) throw new Error('Original location is occupied');
+        await moveFile(h, dir, m.toName, m.fromDir, m.fromName);
+        restored++;
+      } catch (e) { failed.push({ ...m, error: e.message }); }
+    }
+    // Remove now-empty folders, deepest first (removeEntry fails on non-empty ones).
+    const folders = new Set();
+    for (const m of log.moves) { const parts = m.folder.split('/'); for (let i = parts.length; i > 0; i--) folders.add(parts.slice(0, i).join('/')); }
+    for (const f of [...folders].sort((a, b) => b.split('/').length - a.split('/').length)) {
+      const parts = f.split('/');
+      try { await (await dirAt(log.rootHandle, parts.slice(0, -1), false)).removeEntry(parts[parts.length - 1]); } catch { /* not empty */ }
+      await sleep(0);
+    }
+    this.undoLog = null;
+    return { restored, failed };
+  },
+};
+
+let backend = serverBackend;
+const roots = { dupPath: null, orgPath: null }; // browser mode: directory handles
+
+async function detectBackend() {
+  try {
+    const d = await api('/api/drives');
+    picker.drives = d.drives;
+    renderDrives();
+    return;
+  } catch { /* no server - fall back to browser mode */ }
+  backend = browserBackend;
+  document.body.classList.add('browser-mode');
+  const supported = 'showDirectoryPicker' in window;
+  const banner = $('#modeBanner');
+  banner.classList.remove('hidden');
+  banner.innerHTML = supported
+    ? `<strong>Browser mode.</strong> The Data Cleaner server isn't running, so this page works on folders you grant access to through your browser.
+       Deleted files are removed <strong>permanently</strong> (browsers can't use the Recycle Bin), and whole system drives like <span class="mono">C:\\</span> can't be picked.
+       For full drive access and Recycle Bin support, download the app and run <span class="mono">start.bat</span>.`
+    : `<strong>Your browser can't access local folders.</strong> Open this page in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong> on a computer,
+       or download the app and run <span class="mono">start.bat</span>.`;
+  $('#recycleOpt').classList.add('hidden');
+  document.querySelector('input[name=delMode][value=permanent]').checked = true;
+  document.querySelectorAll('[data-pick]').forEach((b) => { b.textContent = 'Choose folder'; });
 }
 
 // ---------- tabs ----------
@@ -310,15 +616,19 @@ const picker = { target: null, current: null, drives: null };
 document.querySelectorAll('[data-pick]').forEach((b) => b.onclick = () => openPicker(b.dataset.pick));
 
 async function openPicker(target) {
+  if (backend === browserBackend) {
+    if (!('showDirectoryPicker' in window)) return toast('Folder access needs Chrome or Edge on a computer.');
+    try {
+      const h = await window.showDirectoryPicker({ id: target, mode: 'readwrite' });
+      roots[target] = h;
+      $('#' + target).value = h.name;
+    } catch (e) {
+      if (e.name !== 'AbortError') toast('Cannot open that folder: ' + e.message);
+    }
+    return;
+  }
   picker.target = target;
   $('#picker').classList.remove('hidden');
-  if (!picker.drives) {
-    try {
-      const d = await api('/api/drives');
-      picker.drives = d.drives;
-      renderDrives();
-    } catch (e) { $('#drives').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
-  }
   const existing = $('#' + target).value;
   if (existing) navigate(existing);
 }
@@ -347,7 +657,6 @@ async function navigate(p) {
     $('#pickSelect').disabled = false;
     $('#pathInput').value = d.path;
     document.querySelectorAll('.drive').forEach((el) => el.classList.toggle('sel', d.path.toLowerCase().startsWith(el.dataset.path.toLowerCase())));
-    // breadcrumbs
     const parts = d.path.split(/[\\/]/).filter(Boolean);
     const sep = d.path.includes('\\') ? '\\' : '/';
     let acc = '';
@@ -368,40 +677,19 @@ async function navigate(p) {
   } catch (e) { toast('Cannot open folder: ' + e.message); }
 }
 
+// Root argument for the active backend: a path (server) or a directory handle (browser).
+function rootFor(target) {
+  if (backend === browserBackend) return roots[target];
+  return $('#' + target).value || null;
+}
+
 // ---------- duplicate scan ----------
-const TYPE_EXTS = {
-  Images: 'jpg jpeg png gif bmp webp tif tiff heic heif raw cr2 nef arw psd svg',
-  Videos: 'mp4 mkv avi mov wmv flv webm m4v mpg mpeg 3gp',
-  Audio: 'mp3 wav flac aac ogg m4a wma opus',
-  Documents: 'pdf doc docx txt rtf odt xls xlsx csv ppt pptx md epub',
-  Archives: 'zip rar 7z tar gz bz2 xz iso',
-};
-let scanJob = null, scanTimer = null, scanResult = null;
+let scanResult = null;
+const cancelToken = {};
 const marked = new Set();
 let groupsShown = 0;
 
-$('#scanBtn').onclick = async () => {
-  const p = $('#dupPath').value;
-  if (!p) { toast('Select a drive or folder first'); openPicker('dupPath'); return; }
-  const type = $('#typeFilter').value;
-  try {
-    const { jobId } = await api('/api/scan', {
-      path: p, minSize: Number($('#minSize').value), includeHidden: $('#includeHidden').checked,
-      extensions: type ? TYPE_EXTS[type].split(' ') : null,
-    });
-    scanJob = jobId; marked.clear();
-    $('#scanBtn').disabled = true;
-    $('#scanProgress').classList.remove('hidden');
-    $('#dupResults').classList.add('hidden');
-    pollScan();
-  } catch (e) { toast(e.message); }
-};
-$('#cancelScan').onclick = () => scanJob && api('/api/job/cancel', { id: scanJob });
-
-async function pollScan() {
-  clearTimeout(scanTimer);
-  let j;
-  try { j = await api('/api/job?id=' + scanJob); } catch (e) { toast(e.message); return; }
+function renderProgress(j) {
   $('#scanPhase').textContent = j.phase;
   const bar = $('#scanBar');
   if (j.toHash && j.phase !== 'Listing files') {
@@ -413,15 +701,32 @@ async function pollScan() {
     $('#scanCount').textContent = `${fmtNum(j.filesSeen)} files found (${fmtBytes(j.bytesSeen)})`;
   }
   $('#scanDir').textContent = j.phase === 'Listing files' ? j.currentDir : '';
-  if (j.status === 'running') { scanTimer = setTimeout(pollScan, 500); return; }
+}
+
+$('#scanBtn').onclick = async () => {
+  const root = rootFor('dupPath');
+  if (!root) { toast('Select a drive or folder first'); openPicker('dupPath'); return; }
+  const type = $('#typeFilter').value;
+  marked.clear();
+  $('#scanBtn').disabled = true;
+  $('#scanProgress').classList.remove('hidden');
+  $('#dupResults').classList.add('hidden');
+  try {
+    const result = await backend.scan(root, {
+      minSize: Number($('#minSize').value), includeHidden: $('#includeHidden').checked,
+      extensions: type ? CATEGORIES[type].split(' ') : null,
+    }, renderProgress, cancelToken);
+    if (!result) toast('Scan cancelled');
+    else {
+      scanResult = result;
+      renderResults();
+      toast(`Scan finished in ${(result.durationMs / 1000).toFixed(1)}s`);
+    }
+  } catch (e) { toast('Scan failed: ' + e.message); }
   $('#scanBtn').disabled = false;
   $('#scanProgress').classList.add('hidden');
-  if (j.status === 'error') return toast('Scan failed: ' + j.error);
-  if (j.status === 'cancelled') return toast('Scan cancelled');
-  scanResult = j.result;
-  renderResults();
-  toast(`Scan finished in ${(j.result.durationMs / 1000).toFixed(1)}s`);
-}
+};
+$('#cancelScan').onclick = () => cancelToken.cancel && cancelToken.cancel();
 
 function renderResults() {
   const r = scanResult;
@@ -444,6 +749,7 @@ function filteredGroups() {
 }
 
 function groupHtml(g, idx) {
+  const canReveal = backend === serverBackend;
   return `<div class="group" data-g="${idx}">
     <div class="group-head">
       <span class="name">${esc(g.files[0].name)}</span>
@@ -455,7 +761,7 @@ function groupHtml(g, idx) {
       <input type="checkbox" data-f="${esc(f.path)}" ${marked.has(f.path) ? 'checked' : ''} title="Mark for deletion">
       <div class="mono">${esc(f.path)}</div>
       <div class="date">${fmtDate(f.mtime)}</div>
-      <div class="acts"><button class="btn small" data-reveal="${esc(f.path)}">Show</button></div>
+      <div class="acts">${canReveal ? `<button class="btn small" data-reveal="${esc(f.path)}">Show</button>` : ''}</div>
     </div>`).join('')}
   </div>`;
 }
@@ -474,8 +780,7 @@ $('#dupSearch').oninput = () => { groupsShown = 0; $('#groups').innerHTML = ''; 
 $('#groups').addEventListener('change', (e) => {
   const p = e.target.dataset.f;
   if (!p) return;
-  const groupEl = e.target.closest('.group');
-  const g = scanResult.groups[groupEl.dataset.g];
+  const g = scanResult.groups[e.target.closest('.group').dataset.g];
   if (e.target.checked) {
     const others = g.files.filter((f) => f.path !== p && !marked.has(f.path));
     if (!others.length) { e.target.checked = false; toast('You must keep at least one copy of each file.'); return; }
@@ -486,7 +791,7 @@ $('#groups').addEventListener('change', (e) => {
 });
 $('#groups').addEventListener('click', (e) => {
   const p = e.target.dataset.reveal;
-  if (p) api('/api/reveal', { path: p }).catch(() => {});
+  if (p) backend.reveal(p);
 });
 
 $('#autoSelect').onchange = () => {
@@ -517,8 +822,9 @@ function updateMarked() {
 
 $('#deleteBtn').onclick = () => {
   $('#delSummary').innerHTML = `You are about to remove <strong>${fmtNum(marked.size)}</strong> duplicate files, freeing <strong>${fmtBytes(markedBytes())}</strong>.`;
-  document.querySelector('input[name=delMode][value=recycle]').checked = true;
-  $('#permWarn').classList.add('hidden');
+  const mode = backend === serverBackend ? 'recycle' : 'permanent';
+  document.querySelector(`input[name=delMode][value=${mode}]`).checked = true;
+  $('#permWarn').classList.toggle('hidden', mode !== 'permanent');
   $('#confirmDel').classList.remove('hidden');
 };
 document.querySelectorAll('input[name=delMode]').forEach((r) => r.onchange = () => $('#permWarn').classList.toggle('hidden', r.value !== 'permanent' || !r.checked));
@@ -527,7 +833,7 @@ $('#delConfirm').onclick = async () => {
   const mode = document.querySelector('input[name=delMode]:checked').value;
   $('#delConfirm').disabled = true; $('#delConfirm').textContent = 'Deleting…';
   try {
-    const { results } = await api('/api/delete', { files: [...marked], mode });
+    const results = await backend.deleteFiles([...marked], mode);
     const ok = new Set(results.filter((r) => r.ok).map((r) => r.path));
     const failed = results.filter((r) => !r.ok);
     for (const g of scanResult.groups) g.files = g.files.filter((f) => !ok.has(f.path));
@@ -544,11 +850,11 @@ $('#delConfirm').onclick = async () => {
 // ---------- organize ----------
 let plan = null, movesShown = 0;
 $('#previewBtn').onclick = async () => {
-  const p = $('#orgPath').value;
-  if (!p) { toast('Select a folder first'); openPicker('orgPath'); return; }
+  const root = rootFor('orgPath');
+  if (!root) { toast('Select a folder first'); openPicker('orgPath'); return; }
   $('#previewBtn').disabled = true;
   try {
-    plan = await api('/api/organize/preview', { path: p, mode: document.querySelector('input[name=orgMode]:checked').value, includeSubfolders: $('#orgSub').checked });
+    plan = await backend.organizePreview(root, document.querySelector('input[name=orgMode]:checked').value, $('#orgSub').checked);
     renderPlan();
   } catch (e) { toast(e.message); }
   $('#previewBtn').disabled = false;
@@ -577,7 +883,7 @@ $('#applyBtn').onclick = async () => {
   if (!confirm(`Move ${plan.moves.length} files into organized folders?`)) return;
   $('#applyBtn').disabled = true; $('#applyBtn').textContent = 'Moving…';
   try {
-    const r = await api('/api/organize/apply', { path: plan.root, moves: plan.moves });
+    const r = await backend.organizeApply(plan);
     toast(`${fmtNum(r.moved)} files organized` + (r.failed.length ? ` · ${r.failed.length} failed (${r.failed[0].error})` : ''));
     plan = null; $('#orgPreview').classList.add('hidden');
     refreshUndo();
@@ -587,7 +893,7 @@ $('#applyBtn').onclick = async () => {
 
 async function refreshUndo() {
   try {
-    const { undo } = await api('/api/organize/undo');
+    const undo = await backend.undoInfo();
     $('#undoCard').classList.toggle('hidden', !undo);
     if (undo) $('#undoText').innerHTML = `Last organize: <strong>${fmtNum(undo.count)}</strong> files in <span class="mono">${esc(undo.root)}</span> · ${fmtDate(undo.at)}`;
   } catch { /* ignore */ }
@@ -595,11 +901,13 @@ async function refreshUndo() {
 $('#undoBtn').onclick = async () => {
   if (!confirm('Move all files back to where they were before the last organize?')) return;
   try {
-    const r = await api('/api/organize/undo', {});
+    const r = await backend.undo();
     toast(`${fmtNum(r.restored)} files restored` + (r.failed.length ? ` · ${r.failed.length} could not be restored` : ''));
   } catch (e) { toast(e.message); }
   refreshUndo();
 };
+
+detectBackend();
 </script>
 </body>
 </html>

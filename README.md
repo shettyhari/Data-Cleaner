@@ -12,6 +12,17 @@ node server.js
 
 Then open http://localhost:4321. Requires Node.js 18+ and no other dependencies.
 
+## Hosted / browser mode
+
+If the page is opened without `server.js` running (for example deployed as a static site on Vercel or GitHub Pages), it automatically switches to **browser mode**:
+
+- Uses the browser's File System Access API, so it works in **Chrome or Edge** on a computer.
+- You pick a folder with the browser's own dialog. Browsers don't allow picking whole system drives such as `C:\`, but subfolders are fine.
+- Deleted duplicates are removed permanently, because browsers can't use the Recycle Bin.
+- Organize and undo work the same way. The undo history lasts until the page is reloaded.
+
+For full drive access and Recycle Bin support, run the app locally with `start.bat`.
+
 ## Features
 
 **Duplicate Finder**

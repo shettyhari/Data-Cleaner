@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Cleaner</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1d2330; --muted: #677085; --border: #e1e4ea;
+    --accent: #2f6fec; --accent-soft: #e8f0fe; --danger: #d93a3a; --danger-soft: #fdecec;
+    --ok: #1f9d55; --ok-soft: #e6f6ed; --warn: #b7791f; --row: #fafbfc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b1f27; --text: #e6e9ef; --muted: #98a1b3; --border: #2c323d;
+      --accent: #5b8ef5; --accent-soft: #1f2b45; --danger: #ef6464; --danger-soft: #3a1f22;
+      --ok: #3fbf7a; --ok-soft: #173326; --warn: #e0a84a; --row: #20252e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 18px; margin: 0; }
+  header .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; color: #fff; font-weight: 700; }
+  nav { display: flex; gap: 4px; margin-left: 24px; }
+  nav button { background: none; border: 0; padding: 8px 14px; border-radius: 8px; color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
+  nav button.active { background: var(--accent-soft); color: var(--accent); }
+  main { max-width: 1150px; margin: 0 auto; padding: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 4px; font-size: 16px; }
+  .card p.sub { margin: 0 0 16px; color: var(--muted); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 200px; }
+  input[type=text], input[type=number], select { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+  input[type=text] { width: 100%; }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .btn { font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; white-space: nowrap; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .btn.small { padding: 4px 10px; font-size: 12px; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .stat .v { font-size: 22px; font-weight: 700; }
+  .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .progress { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin: 10px 0; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .progress.indet > div { width: 30%; animation: indet 1.2s infinite ease-in-out; }
+  @keyframes indet { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+  .muted { color: var(--muted); }
+  .mono { font-family: Consolas, ui-monospace, monospace; font-size: 12.5px; word-break: break-all; }
+  .group { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+  .group-head { display: flex; gap: 10px; align-items: center; padding: 10px 14px; background: var(--row); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .group-head .name { font-weight: 600; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .pill.red { background: var(--danger-soft); color: var(--danger); }
+  .pill.green { background: var(--ok-soft); color: var(--ok); }
+  .file { display: grid; grid-template-columns: 24px 1fr auto auto; gap: 10px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  .file:last-child { border-bottom: 0; }
+  .file.marked { background: var(--danger-soft); }
+  .file .date { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .toolbar { position: sticky; top: 0; z-index: 5; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 12px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .folders { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .folder-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--row); }
+  .folder-card .t { font-weight: 600; }
+  .hidden { display: none !important; }
+  .empty { text-align: center; padding: 40px; color: var(--muted); }
+  /* modal */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; place-items: center; z-index: 50; padding: 16px; }
+  .modal { background: var(--panel); border-radius: 14px; width: min(720px, 100%); max-height: 88vh; display: flex; flex-direction: column; border: 1px solid var(--border); }
+  .modal header { border-radius: 14px 14px 0 0; justify-content: space-between; }
+  .modal .body { padding: 16px 20px; overflow: auto; flex: 1; }
+  .modal .foot { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+  .drives { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .drive { border: 1px solid var(--border); border-radius: 10px; padding: 10px; cursor: pointer; background: var(--row); }
+  .drive:hover, .drive.sel { border-color: var(--accent); background: var(--accent-soft); }
+  .drive .bar { height: 5px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  .drive .bar div { height: 100%; background: var(--accent); }
+  .crumbs { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; margin-bottom: 8px; }
+  .crumbs button { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 2px 4px; border-radius: 4px; }
+  .crumbs button:hover { background: var(--accent-soft); }
+  .flist { border: 1px solid var(--border); border-radius: 10px; max-height: 340px; overflow: auto; }
+  .flist div { padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; gap: 8px; align-items: center; }
+  .flist div:hover { background: var(--accent-soft); }
+  .flist div:last-child { border-bottom: 0; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--text); color: var(--panel); padding: 12px 18px; border-radius: 10px; z-index: 100; max-width: 420px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+  .warnbox { background: var(--danger-soft); color: var(--danger); padding: 10px 14px; border-radius: 8px; margin: 10px 0; }
+  .radio-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 6px 0 14px; }
+  .radio-cards label { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; cursor: pointer; display: block; }
+  .radio-cards label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .radio-cards input { margin-right: 6px; }
+  .radio-cards small { display: block; color: var(--muted); margin-top: 2px; }
+  @media (max-width: 640px) {
+    header { padding: 12px 16px; flex-wrap: wrap; } nav { margin-left: 0; }
+    main { padding: 16px; }
+    .file { grid-template-columns: 24px 1fr; } .file .date, .file .acts { grid-column: 2; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">DC</div>
+  <h1>Data Cleaner</h1>
+  <nav>
+    <button data-tab="dupes" class="active">Duplicate Finder</button>
+    <button data-tab="organize">Organize Folder</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============ DUPLICATES ============ -->
+  <section id="tab-dupes">
+    <div class="card">
+      <h2>Find duplicate files</h2>
+      <p class="sub">Pick a drive or folder. Files are compared by size and then by SHA-256 content hash, so only truly identical files are reported.</p>
+      <div class="row">
+        <div class="grow"><input type="text" id="dupPath" placeholder="Select a drive or folder…" readonly></div>
+        <button class="btn" data-pick="dupPath">Select drive / folder</button>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <label class="inline">Ignore files smaller than
+          <select id="minSize">
+            <option value="0">no limit</option>
+            <option value="1024" selected>1 KB</option>
+            <option value="102400">100 KB</option>
+            <option value="1048576">1 MB</option>
+            <option value="10485760">10 MB</option>
+          </select>
+        </label>
+        <label class="inline">File types
+          <select id="typeFilter">
+            <option value="">All files</option>
+            <option value="Images">Images</option>
+            <option value="Videos">Videos</option>
+            <option value="Audio">Audio</option>
+            <option value="Documents">Documents</option>
+            <option value="Archives">Archives</option>
+          </select>
+        </label>
+        <label class="inline"><input type="checkbox" id="includeHidden"> Include hidden (dot) files</label>
+        <div class="grow"></div>
+        <button class="btn primary" id="scanBtn">Scan for duplicates</button>
+      </div>
+      <div id="scanProgress" class="hidden" style="margin-top:14px">
+        <div class="row"><strong id="scanPhase">Starting…</strong><span class="muted" id="scanCount"></span><div class="grow"></div><button class="btn small" id="cancelScan">Cancel</button></div>
+        <div class="progress indet" id="scanBar"><div></div></div>
+        <div class="mono muted" id="scanDir"></div>
+      </div>
+    </div>
+
+    <div id="dupResults" class="hidden">
+      <div class="stats">
+        <div class="stat"><div class="v" id="sFiles">0</div><div class="l">Files scanned</div></div>
+        <div class="stat"><div class="v" id="sGroups">0</div><div class="l">Duplicate groups</div></div>
+        <div class="stat"><div class="v" id="sDupes">0</div><div class="l">Extra copies</div></div>
+        <div class="stat"><div class="v" id="sWasted">0</div><div class="l">Space recoverable</div></div>
+      </div>
+      <div class="toolbar">
+        <label class="inline">Auto-select:
+          <select id="autoSelect">
+            <option value="">— choose rule —</option>
+            <option value="keepOldest">Keep oldest, mark the rest</option>
+            <option value="keepNewest">Keep newest, mark the rest</option>
+            <option value="keepShortest">Keep shortest path, mark the rest</option>
+            <option value="none">Clear all marks</option>
+          </select>
+        </label>
+        <input type="text" id="dupSearch" placeholder="Filter by name or path…" style="max-width:260px">
+        <div class="grow"></div>
+        <span id="markedInfo" class="muted">0 files marked</span>
+        <button class="btn danger" id="deleteBtn" disabled>Delete marked…</button>
+      </div>
+      <div id="groups"></div>
+      <div class="row" style="justify-content:center"><button class="btn hidden" id="moreGroups">Show more groups</button></div>
+    </div>
+  </section>
+
+  <!-- ============ ORGANIZE ============ -->
+  <section id="tab-organize" class="hidden">
+    <div class="card">
+      <h2>Organize a folder</h2>
+      <p class="sub">Sorts the files in a folder into tidy sub-folders. You'll see a preview before anything moves, and the last organize can be undone.</p>
+      <div class="row">
+        <div class="grow"><input type="text" id="orgPath" placeholder="Select a folder to organize…" readonly></div>
+        <button class="btn" data-pick="orgPath">Select folder</button>
+      </div>
+      <div style="margin-top:14px"><strong>Organize by</strong></div>
+      <div class="radio-cards">
+        <label><input type="radio" name="orgMode" value="type" checked>File type<small>Images, Videos, Documents, Audio…</small></label>
+        <label><input type="radio" name="orgMode" value="date">Date modified<small>2026 / 10-October</small></label>
+        <label><input type="radio" name="orgMode" value="type-date">Type, then year<small>Images / 2025</small></label>
+        <label><input type="radio" name="orgMode" value="extension">Extension<small>PDF, JPG, ZIP…</small></label>
+        <label><input type="radio" name="orgMode" value="size">File size<small>Small, Medium, Large, Huge</small></label>
+      </div>
+      <div class="row">
+        <label class="inline"><input type="checkbox" id="orgSub"> Also pull in files from sub-folders (flattens them)</label>
+        <div class="grow"></div>
+        <button class="btn primary" id="previewBtn">Preview changes</button>
+      </div>
+    </div>
+
+    <div id="undoCard" class="card hidden">
+      <div class="row"><div class="grow" id="undoText"></div><button class="btn" id="undoBtn">Undo last organize</button></div>
+    </div>
+
+    <div id="orgPreview" class="hidden">
+      <div class="toolbar">
+        <strong id="orgSummary"></strong>
+        <div class="grow"></div>
+        <button class="btn" id="orgCancel">Discard</button>
+        <button class="btn primary" id="applyBtn">Apply — move files</button>
+      </div>
+      <div class="card">
+        <h2>Resulting folders</h2>
+        <p class="sub">Folders that will be created (or reused) inside the selected folder.</p>
+        <div class="folders" id="orgFolders"></div>
+      </div>
+      <div class="card">
+        <h2>File moves</h2>
+        <table><thead><tr><th>File</th><th>Moves to</th><th>Size</th></tr></thead><tbody id="orgMoves"></tbody></table>
+        <div class="row" style="justify-content:center;margin-top:10px"><button class="btn hidden" id="moreMoves">Show more</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Folder picker -->
+<div class="overlay hidden" id="picker">
+  <div class="modal">
+    <header><h1 style="font-size:16px">Select drive or folder</h1><button class="btn small" id="pickClose">✕</button></header>
+    <div class="body">
+      <div class="muted" style="margin-bottom:6px">Drives</div>
+      <div class="drives" id="drives"><div class="muted">Loading drives…</div></div>
+      <div class="row" style="margin-bottom:8px">
+        <input type="text" id="pathInput" placeholder="Or type a path, e.g. D:\Photos" class="grow">
+        <button class="btn" id="goPath">Go</button>
+      </div>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="flist" id="flist"><div class="muted" style="cursor:default">Choose a drive above.</div></div>
+    </div>
+    <div class="foot">
+      <span class="muted mono grow" id="pickCurrent"></span>
+      <button class="btn" id="pickCancel">Cancel</button>
+      <button class="btn primary" id="pickSelect" disabled>Select this folder</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete confirmation -->
+<div class="overlay hidden" id="confirmDel">
+  <div class="modal" style="width:min(520px,100%)">
+    <header><h1 style="font-size:16px">Delete duplicate files</h1></header>
+    <div class="body">
+      <p id="delSummary"></p>
+      <div class="radio-cards" style="grid-template-columns:1fr">
+        <label><input type="radio" name="delMode" value="recycle" checked>Move to Recycle Bin<small>Recommended — you can restore them later.</small></label>
+        <label><input type="radio" name="delMode" value="permanent">Delete permanently<small>Frees space immediately. Cannot be undone.</small></label>
+      </div>
+      <div class="warnbox hidden" id="permWarn">Permanent deletion cannot be undone.</div>
+      <p class="muted">At least one copy of every file is always kept — the app refuses to delete all copies.</p>
+    </div>
+    <div class="foot">
+      <button class="btn" id="delCancel">Cancel</button>
+      <button class="btn danger" id="delConfirm">Delete</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtBytes = (b) => {
+  if (!b) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (i ? b.toFixed(b < 10 ? 2 : 1) : b) + ' ' + u[i];
+};
+const fmtDate = (ms) => new Date(ms).toLocaleString();
+const fmtNum = (n) => n.toLocaleString();
+
+async function api(url, body) {
+  const res = await fetch(url, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+let toastTimer;
+function toast(msg) {
+  let t = $('.toast');
+  if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.appendChild(t); }
+  t.textContent = msg; t.classList.remove('hidden');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 4500);
+}
+
+// ---------- tabs ----------
+document.querySelectorAll('nav button').forEach((b) => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach((x) => x.classList.toggle('active', x === b));
+  $('#tab-dupes').classList.toggle('hidden', b.dataset.tab !== 'dupes');
+  $('#tab-organize').classList.toggle('hidden', b.dataset.tab !== 'organize');
+  if (b.dataset.tab === 'organize') refreshUndo();
+});
+
+// ---------- folder picker ----------
+const picker = { target: null, current: null, drives: null };
+document.querySelectorAll('[data-pick]').forEach((b) => b.onclick = () => openPicker(b.dataset.pick));
+
+async function openPicker(target) {
+  picker.target = target;
+  $('#picker').classList.remove('hidden');
+  if (!picker.drives) {
+    try {
+      const d = await api('/api/drives');
+      picker.drives = d.drives;
+      renderDrives();
+    } catch (e) { $('#drives').innerHTML = `<div class="muted">${esc(e.message)}</div>`; }
+  }
+  const existing = $('#' + target).value;
+  if (existing) navigate(existing);
+}
+function closePicker() { $('#picker').classList.add('hidden'); }
+$('#pickClose').onclick = closePicker; $('#pickCancel').onclick = closePicker;
+$('#pickSelect').onclick = () => { if (picker.current) { $('#' + picker.target).value = picker.current; closePicker(); } };
+$('#goPath').onclick = () => $('#pathInput').value.trim() && navigate($('#pathInput').value.trim());
+$('#pathInput').onkeydown = (e) => { if (e.key === 'Enter') $('#goPath').click(); };
+
+function renderDrives() {
+  $('#drives').innerHTML = picker.drives.map((d) => {
+    const used = d.size ? Math.round((1 - d.free / d.size) * 100) : 0;
+    return `<div class="drive" data-path="${esc(d.path)}">
+      <div><strong>${esc(d.label)}</strong> <span class="muted">${esc(d.name || d.type || '')}</span></div>
+      ${d.size ? `<div class="muted" style="font-size:12px">${fmtBytes(d.free)} free of ${fmtBytes(d.size)}</div><div class="bar"><div style="width:${used}%"></div></div>` : ''}
+    </div>`;
+  }).join('');
+  document.querySelectorAll('.drive').forEach((el) => el.onclick = () => navigate(el.dataset.path));
+}
+
+async function navigate(p) {
+  try {
+    const d = await api('/api/browse?path=' + encodeURIComponent(p));
+    picker.current = d.path;
+    $('#pickCurrent').textContent = d.path;
+    $('#pickSelect').disabled = false;
+    $('#pathInput').value = d.path;
+    document.querySelectorAll('.drive').forEach((el) => el.classList.toggle('sel', d.path.toLowerCase().startsWith(el.dataset.path.toLowerCase())));
+    // breadcrumbs
+    const parts = d.path.split(/[\\/]/).filter(Boolean);
+    const sep = d.path.includes('\\') ? '\\' : '/';
+    let acc = '';
+    $('#crumbs').innerHTML = parts.map((part, i) => {
+      if (i === 0) acc = d.path.startsWith('/') ? '/' + part : part + sep;
+      else acc = acc.replace(/[\\/]$/, '') + sep + part;
+      return `<button data-p="${esc(acc)}">${esc(part)}</button>${i < parts.length - 1 ? '<span class="muted">›</span>' : ''}`;
+    }).join('');
+    document.querySelectorAll('#crumbs button').forEach((b) => b.onclick = () => navigate(b.dataset.p));
+    const rows = [];
+    if (d.parent) rows.push(`<div data-p="${esc(d.parent)}">⬆️ <span>.. (up one level)</span></div>`);
+    for (const f of d.folders) rows.push(`<div data-p="${esc(d.path.replace(/[\\/]$/, '') + sep + f)}">📁 <span>${esc(f)}</span></div>`);
+    if (!d.folders.length) rows.push(`<div class="muted" style="cursor:default">No sub-folders · ${fmtNum(d.fileCount)} files here</div>`);
+    else rows.push(`<div class="muted" style="cursor:default">${fmtNum(d.folders.length)} folders · ${fmtNum(d.fileCount)} files</div>`);
+    $('#flist').innerHTML = rows.join('');
+    document.querySelectorAll('#flist [data-p]').forEach((el) => el.onclick = () => navigate(el.dataset.p));
+    $('#flist').scrollTop = 0;
+  } catch (e) { toast('Cannot open folder: ' + e.message); }
+}
+
+// ---------- duplicate scan ----------
+const TYPE_EXTS = {
+  Images: 'jpg jpeg png gif bmp webp tif tiff heic heif raw cr2 nef arw psd svg',
+  Videos: 'mp4 mkv avi mov wmv flv webm m4v mpg mpeg 3gp',
+  Audio: 'mp3 wav flac aac ogg m4a wma opus',
+  Documents: 'pdf doc docx txt rtf odt xls xlsx csv ppt pptx md epub',
+  Archives: 'zip rar 7z tar gz bz2 xz iso',
+};
+let scanJob = null, scanTimer = null, scanResult = null;
+const marked = new Set();
+let groupsShown = 0;
+
+$('#scanBtn').onclick = async () => {
+  const p = $('#dupPath').value;
+  if (!p) { toast('Select a drive or folder first'); openPicker('dupPath'); return; }
+  const type = $('#typeFilter').value;
+  try {
+    const { jobId } = await api('/api/scan', {
+      path: p, minSize: Number($('#minSize').value), includeHidden: $('#includeHidden').checked,
+      extensions: type ? TYPE_EXTS[type].split(' ') : null,
+    });
+    scanJob = jobId; marked.clear();
+    $('#scanBtn').disabled = true;
+    $('#scanProgress').classList.remove('hidden');
+    $('#dupResults').classList.add('hidden');
+    pollScan();
+  } catch (e) { toast(e.message); }
+};
+$('#cancelScan').onclick = () => scanJob && api('/api/job/cancel', { id: scanJob });
+
+async function pollScan() {
+  clearTimeout(scanTimer);
+  let j;
+  try { j = await api('/api/job?id=' + scanJob); } catch (e) { toast(e.message); return; }
+  $('#scanPhase').textContent = j.phase;
+  const bar = $('#scanBar');
+  if (j.toHash && j.phase !== 'Listing files') {
+    bar.classList.remove('indet');
+    bar.firstElementChild.style.width = Math.round(j.hashed / j.toHash * 100) + '%';
+    $('#scanCount').textContent = `${fmtNum(j.hashed)} / ${fmtNum(j.toHash)} files checked`;
+  } else {
+    bar.classList.add('indet'); bar.firstElementChild.style.width = '';
+    $('#scanCount').textContent = `${fmtNum(j.filesSeen)} files found (${fmtBytes(j.bytesSeen)})`;
+  }
+  $('#scanDir').textContent = j.phase === 'Listing files' ? j.currentDir : '';
+  if (j.status === 'running') { scanTimer = setTimeout(pollScan, 500); return; }
+  $('#scanBtn').disabled = false;
+  $('#scanProgress').classList.add('hidden');
+  if (j.status === 'error') return toast('Scan failed: ' + j.error);
+  if (j.status === 'cancelled') return toast('Scan cancelled');
+  scanResult = j.result;
+  renderResults();
+  toast(`Scan finished in ${(j.result.durationMs / 1000).toFixed(1)}s`);
+}
+
+function renderResults() {
+  const r = scanResult;
+  $('#dupResults').classList.remove('hidden');
+  $('#sFiles').textContent = fmtNum(r.filesScanned);
+  $('#sGroups').textContent = fmtNum(r.groups.length);
+  $('#sDupes').textContent = fmtNum(r.groups.reduce((s, g) => s + g.files.length - 1, 0));
+  $('#sWasted').textContent = fmtBytes(r.groups.reduce((s, g) => s + g.wasted, 0));
+  groupsShown = 0;
+  $('#groups').innerHTML = '';
+  if (!r.groups.length) { $('#groups').innerHTML = '<div class="card empty">🎉 No duplicate files found.</div>'; $('#moreGroups').classList.add('hidden'); }
+  else showMoreGroups();
+  updateMarked();
+}
+
+function filteredGroups() {
+  const q = $('#dupSearch').value.trim().toLowerCase();
+  if (!q) return scanResult.groups;
+  return scanResult.groups.filter((g) => g.files.some((f) => f.path.toLowerCase().includes(q)));
+}
+
+function groupHtml(g, idx) {
+  return `<div class="group" data-g="${idx}">
+    <div class="group-head">
+      <span class="name">${esc(g.files[0].name)}</span>
+      <span class="pill">${g.files.length} copies</span>
+      <span class="pill red">${fmtBytes(g.wasted)} wasted</span>
+      <span class="muted">${fmtBytes(g.size)} each</span>
+    </div>
+    ${g.files.map((f) => `<div class="file ${marked.has(f.path) ? 'marked' : ''}">
+      <input type="checkbox" data-f="${esc(f.path)}" ${marked.has(f.path) ? 'checked' : ''} title="Mark for deletion">
+      <div class="mono">${esc(f.path)}</div>
+      <div class="date">${fmtDate(f.mtime)}</div>
+      <div class="acts"><button class="btn small" data-reveal="${esc(f.path)}">Show</button></div>
+    </div>`).join('')}
+  </div>`;
+}
+
+function showMoreGroups() {
+  const list = filteredGroups();
+  const next = list.slice(groupsShown, groupsShown + 50);
+  $('#groups').insertAdjacentHTML('beforeend', next.map((g) => groupHtml(g, scanResult.groups.indexOf(g))).join(''));
+  groupsShown += next.length;
+  $('#moreGroups').classList.toggle('hidden', groupsShown >= list.length);
+  $('#moreGroups').textContent = `Show more groups (${fmtNum(list.length - groupsShown)} remaining)`;
+}
+$('#moreGroups').onclick = showMoreGroups;
+$('#dupSearch').oninput = () => { groupsShown = 0; $('#groups').innerHTML = ''; showMoreGroups(); };
+
+$('#groups').addEventListener('change', (e) => {
+  const p = e.target.dataset.f;
+  if (!p) return;
+  const groupEl = e.target.closest('.group');
+  const g = scanResult.groups[groupEl.dataset.g];
+  if (e.target.checked) {
+    const others = g.files.filter((f) => f.path !== p && !marked.has(f.path));
+    if (!others.length) { e.target.checked = false; toast('You must keep at least one copy of each file.'); return; }
+    marked.add(p);
+  } else marked.delete(p);
+  e.target.closest('.file').classList.toggle('marked', e.target.checked);
+  updateMarked();
+});
+$('#groups').addEventListener('click', (e) => {
+  const p = e.target.dataset.reveal;
+  if (p) api('/api/reveal', { path: p }).catch(() => {});
+});
+
+$('#autoSelect').onchange = () => {
+  const rule = $('#autoSelect').value;
+  if (!rule) return;
+  marked.clear();
+  if (rule !== 'none') for (const g of scanResult.groups) {
+    let keep;
+    if (rule === 'keepOldest') keep = g.files.reduce((a, b) => (b.mtime < a.mtime ? b : a));
+    if (rule === 'keepNewest') keep = g.files.reduce((a, b) => (b.mtime > a.mtime ? b : a));
+    if (rule === 'keepShortest') keep = g.files.reduce((a, b) => (b.path.length < a.path.length ? b : a));
+    for (const f of g.files) if (f !== keep) marked.add(f.path);
+  }
+  $('#autoSelect').value = '';
+  groupsShown = 0; $('#groups').innerHTML = ''; showMoreGroups();
+  updateMarked();
+};
+
+function markedBytes() {
+  let b = 0;
+  for (const g of scanResult.groups) for (const f of g.files) if (marked.has(f.path)) b += f.size;
+  return b;
+}
+function updateMarked() {
+  $('#markedInfo').textContent = `${fmtNum(marked.size)} files marked · ${fmtBytes(scanResult ? markedBytes() : 0)}`;
+  $('#deleteBtn').disabled = !marked.size;
+}
+
+$('#deleteBtn').onclick = () => {
+  $('#delSummary').innerHTML = `You are about to remove <strong>${fmtNum(marked.size)}</strong> duplicate files, freeing <strong>${fmtBytes(markedBytes())}</strong>.`;
+  document.querySelector('input[name=delMode][value=recycle]').checked = true;
+  $('#permWarn').classList.add('hidden');
+  $('#confirmDel').classList.remove('hidden');
+};
+document.querySelectorAll('input[name=delMode]').forEach((r) => r.onchange = () => $('#permWarn').classList.toggle('hidden', r.value !== 'permanent' || !r.checked));
+$('#delCancel').onclick = () => $('#confirmDel').classList.add('hidden');
+$('#delConfirm').onclick = async () => {
+  const mode = document.querySelector('input[name=delMode]:checked').value;
+  $('#delConfirm').disabled = true; $('#delConfirm').textContent = 'Deleting…';
+  try {
+    const { results } = await api('/api/delete', { files: [...marked], mode });
+    const ok = new Set(results.filter((r) => r.ok).map((r) => r.path));
+    const failed = results.filter((r) => !r.ok);
+    for (const g of scanResult.groups) g.files = g.files.filter((f) => !ok.has(f.path));
+    scanResult.groups = scanResult.groups.filter((g) => g.files.length > 1);
+    for (const g of scanResult.groups) g.wasted = g.size * (g.files.length - 1);
+    marked.clear();
+    renderResults();
+    toast(`${fmtNum(ok.size)} files ${mode === 'recycle' ? 'moved to Recycle Bin' : 'deleted'}` + (failed.length ? ` · ${failed.length} failed (${failed[0].error})` : ''));
+  } catch (e) { toast('Delete failed: ' + e.message); }
+  $('#delConfirm').disabled = false; $('#delConfirm').textContent = 'Delete';
+  $('#confirmDel').classList.add('hidden');
+};
+
+// ---------- organize ----------
+let plan = null, movesShown = 0;
+$('#previewBtn').onclick = async () => {
+  const p = $('#orgPath').value;
+  if (!p) { toast('Select a folder first'); openPicker('orgPath'); return; }
+  $('#previewBtn').disabled = true;
+  try {
+    plan = await api('/api/organize/preview', { path: p, mode: document.querySelector('input[name=orgMode]:checked').value, includeSubfolders: $('#orgSub').checked });
+    renderPlan();
+  } catch (e) { toast(e.message); }
+  $('#previewBtn').disabled = false;
+};
+
+function renderPlan() {
+  $('#orgPreview').classList.remove('hidden');
+  const n = plan.moves.length;
+  const folders = Object.entries(plan.summary).sort((a, b) => b[1].count - a[1].count);
+  $('#orgSummary').textContent = n ? `${fmtNum(n)} files will be moved into ${folders.length} folders` : 'Nothing to organize — this folder is already tidy.';
+  $('#applyBtn').disabled = !n;
+  $('#orgFolders').innerHTML = folders.map(([f, s]) => `<div class="folder-card"><div class="t">📁 ${esc(f)}</div><div class="muted">${fmtNum(s.count)} files · ${fmtBytes(s.size)}</div></div>`).join('') || '<div class="muted">—</div>';
+  movesShown = 0; $('#orgMoves').innerHTML = ''; showMoreMoves();
+}
+function rel(p) { const r = plan.root.replace(/[\\/]$/, ''); return p.toLowerCase().startsWith(r.toLowerCase()) ? p.slice(r.length + 1) : p; }
+function showMoreMoves() {
+  const next = plan.moves.slice(movesShown, movesShown + 200);
+  $('#orgMoves').insertAdjacentHTML('beforeend', next.map((m) => `<tr><td class="mono">${esc(rel(m.from))}</td><td class="mono">${esc(rel(m.to))}</td><td class="muted">${fmtBytes(m.size)}</td></tr>`).join(''));
+  movesShown += next.length;
+  $('#moreMoves').classList.toggle('hidden', movesShown >= plan.moves.length);
+  $('#moreMoves').textContent = `Show more (${fmtNum(plan.moves.length - movesShown)} remaining)`;
+}
+$('#moreMoves').onclick = showMoreMoves;
+$('#orgCancel').onclick = () => { plan = null; $('#orgPreview').classList.add('hidden'); };
+$('#applyBtn').onclick = async () => {
+  if (!confirm(`Move ${plan.moves.length} files into organized folders?`)) return;
+  $('#applyBtn').disabled = true; $('#applyBtn').textContent = 'Moving…';
+  try {
+    const r = await api('/api/organize/apply', { path: plan.root, moves: plan.moves });
+    toast(`${fmtNum(r.moved)} files organized` + (r.failed.length ? ` · ${r.failed.length} failed (${r.failed[0].error})` : ''));
+    plan = null; $('#orgPreview').classList.add('hidden');
+    refreshUndo();
+  } catch (e) { toast(e.message); }
+  $('#applyBtn').disabled = false; $('#applyBtn').textContent = 'Apply — move files';
+};
+
+async function refreshUndo() {
+  try {
+    const { undo } = await api('/api/organize/undo');
+    $('#undoCard').classList.toggle('hidden', !undo);
+    if (undo) $('#undoText').innerHTML = `Last organize: <strong>${fmtNum(undo.count)}</strong> files in <span class="mono">${esc(undo.root)}</span> · ${fmtDate(undo.at)}`;
+  } catch { /* ignore */ }
+}
+$('#undoBtn').onclick = async () => {
+  if (!confirm('Move all files back to where they were before the last organize?')) return;
+  try {
+    const r = await api('/api/organize/undo', {});
+    toast(`${fmtNum(r.restored)} files restored` + (r.failed.length ? ` · ${r.failed.length} could not be restored` : ''));
+  } catch (e) { toast(e.message); }
+  refreshUndo();
+};
+</script>
+</body>
+</html>
